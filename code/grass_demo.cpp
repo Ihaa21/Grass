@@ -109,38 +109,16 @@ DEMO_INIT(Init)
             InitParams.ValidationEnabled = true;
             InitParams.WindowWidth = WindowWidth;
             InitParams.WindowHeight = WindowHeight;
-            InitParams.StagingBufferSize = MegaBytes(400);
+            InitParams.GpuLocalSize = MegaBytes(400);
             InitParams.DeviceExtensionCount = ArrayCount(DeviceExtensions);
             InitParams.DeviceExtensions = DeviceExtensions;
             VkInit(VulkanLib, hInstance, WindowHandle, &DemoState->Arena, &DemoState->TempArena, InitParams);
         }
-        
-        // NOTE: Init descriptor pool
-        {
-            VkDescriptorPoolSize Pools[5] = {};
-            Pools[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            Pools[0].descriptorCount = 1000;
-            Pools[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            Pools[1].descriptorCount = 1000;
-            Pools[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            Pools[2].descriptorCount = 1000;
-            Pools[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-            Pools[3].descriptorCount = 1000;
-            Pools[4].type = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-            Pools[4].descriptorCount = 1000;
-            
-            VkDescriptorPoolCreateInfo CreateInfo = {};
-            CreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            CreateInfo.maxSets = 1000;
-            CreateInfo.poolSizeCount = ArrayCount(Pools);
-            CreateInfo.pPoolSizes = Pools;
-            VkCheckResult(vkCreateDescriptorPool(RenderState->Device, &CreateInfo, 0, &RenderState->DescriptorPool));
-        }
     }
     
     // NOTE: Create samplers
-    DemoState->PointSampler = VkSamplerCreate(RenderState->Device, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-    DemoState->LinearSampler = VkSamplerCreate(RenderState->Device, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+    DemoState->PointSampler = VkSamplerCreate(RenderState->Device, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, 0.0f);
+    DemoState->LinearSampler = VkSamplerCreate(RenderState->Device, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, 0.0f);
     DemoState->AnisoSampler = VkSamplerMipMapCreate(RenderState->Device, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 16.0f,
                                                     VK_SAMPLER_MIPMAP_MODE_LINEAR, 0, 0, 5);    
         
@@ -173,8 +151,8 @@ DEMO_INIT(Init)
     {
         render_scene* Scene = &DemoState->Scene;
 
-        Scene->Camera = CameraFpsCreate(V3(0, 0, -5), V3(0, 0, 1), f32(RenderState->WindowWidth / RenderState->WindowHeight),
-                                        0.01f, 1000.0f, 90.0f, 1.0f, 0.005f);
+        Scene->Camera = CameraFpsCreate(V3(0, 0, -5), V3(0, 0, 1), true, 1.0f, 0.005f);
+        CameraSetPersp(&Scene->Camera, f32(RenderState->WindowWidth / RenderState->WindowHeight), 90.0f, 0.01f, 1000.0f);
 
         Scene->SceneBuffer = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
                                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -248,8 +226,8 @@ DEMO_INIT(Init)
     }
     
     // NOTE: Upload assets
-    vk_commands Commands = RenderState->Commands;
-    VkCommandsBegin(RenderState->Device, Commands);
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
     {
         render_scene* Scene = &DemoState->Scene;
         
@@ -267,7 +245,7 @@ DEMO_INIT(Init)
                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 
             // TODO: Better barrier here pls
-            u8* GpuMemory = VkTransferPushWriteImage(&RenderState->TransferManager, WhiteTexture.Image, Dim, Dim, ImageSize,
+            u8* GpuMemory = VkCommandsPushWriteImage(Commands, WhiteTexture.Image, Dim, Dim, ImageSize,
                                                      VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
                                                      BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
@@ -295,7 +273,7 @@ DEMO_INIT(Init)
                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 
             // TODO: Better barrier here pls
-            u8* GpuMemory = VkTransferPushWriteImage(&RenderState->TransferManager, CheckerBoardTexture.Image, Dim, Dim, ImageSize,
+            u8* GpuMemory = VkCommandsPushWriteImage(Commands, CheckerBoardTexture.Image, Dim, Dim, ImageSize,
                                                      VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
                                                      BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
@@ -311,14 +289,13 @@ DEMO_INIT(Init)
 
         // NOTE: Create UI
         UiStateCreate(RenderState->Device, &DemoState->Arena, &DemoState->TempArena, RenderState->LocalMemoryId,
-                      &RenderState->DescriptorManager, &RenderState->PipelineManager, &RenderState->TransferManager,
+                      &RenderState->DescriptorManager, &RenderState->PipelineManager, Commands,
                       RenderState->SwapChainFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &DemoState->UiState);
         
         VkDescriptorManagerFlush(RenderState->Device, &RenderState->DescriptorManager);
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, RenderState->Commands.Buffer, &RenderState->BarrierManager);
     }
     
-    VkCommandsSubmit(RenderState->GraphicsQueue, Commands);
+    VkCommandsSubmit(Commands, RenderState->Device, RenderState->GraphicsQueue);
 }
 
 DEMO_DESTROY(Destroy)
@@ -333,7 +310,7 @@ DEMO_SWAPCHAIN_CHANGE(SwapChainChange)
     DemoState->SwapChainEntry.Width = RenderState->WindowWidth;
     DemoState->SwapChainEntry.Height = RenderState->WindowHeight;
 
-    DemoState->Scene.Camera.AspectRatio = f32(RenderState->WindowWidth / RenderState->WindowHeight);
+    DemoState->Scene.Camera.PerspAspectRatio = f32(RenderState->WindowWidth / RenderState->WindowHeight);
 }
 
 DEMO_CODE_RELOAD(CodeReload)
@@ -355,8 +332,8 @@ DEMO_MAIN_LOOP(MainLoop)
                                         VK_NULL_HANDLE, &ImageIndex));
     DemoState->SwapChainEntry.View = RenderState->SwapChainViews[ImageIndex];
 
-    vk_commands Commands = RenderState->Commands;
-    VkCommandsBegin(RenderState->Device, Commands);
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
 
     // NOTE: Update pipelines
     VkPipelineUpdateShaders(RenderState->Device, &RenderState->CpuArena, &RenderState->PipelineManager);
@@ -491,7 +468,7 @@ DEMO_MAIN_LOOP(MainLoop)
         // NOTE: Push opaque instances
         if (Scene->NumOpaqueInstances > 0)
         {
-            gpu_instance_entry* GpuData = VkTransferPushWriteArray(&RenderState->TransferManager, Scene->OpaqueInstanceBuffer, gpu_instance_entry, Scene->NumOpaqueInstances,
+            gpu_instance_entry* GpuData = VkCommandsPushWriteArray(Commands, Scene->OpaqueInstanceBuffer, gpu_instance_entry, Scene->NumOpaqueInstances,
                                                                    BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                    BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
@@ -504,7 +481,7 @@ DEMO_MAIN_LOOP(MainLoop)
         // NOTE: Push Point Lights
         if (Scene->NumPointLights > 0)
         {
-            point_light* PointLights = VkTransferPushWriteArray(&RenderState->TransferManager, Scene->PointLightBuffer, point_light, Scene->NumPointLights,
+            point_light* PointLights = VkCommandsPushWriteArray(Commands, Scene->PointLightBuffer, point_light, Scene->NumPointLights,
                                                                 BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                 BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
@@ -521,7 +498,7 @@ DEMO_MAIN_LOOP(MainLoop)
         // NOTE: Push Directional Lights
         {
             {
-                directional_light_gpu* GpuData = VkTransferPushWriteStruct(&RenderState->TransferManager, Scene->DirectionalLight.Globals, directional_light_gpu,
+                directional_light_gpu* GpuData = VkCommandsPushWriteStruct(Commands, Scene->DirectionalLight.Globals, directional_light_gpu,
                                                                            BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                            BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
                 Copy(&Scene->DirectionalLight.GpuData, GpuData, sizeof(directional_light_gpu));
@@ -532,7 +509,7 @@ DEMO_MAIN_LOOP(MainLoop)
             
             // NOTE: Copy shadow data
             {
-                m4* GpuData = VkTransferPushWriteArray(&RenderState->TransferManager, Scene->DirectionalLight.ShadowTransforms, m4, Scene->NumOpaqueInstances,
+                m4* GpuData = VkCommandsPushWriteArray(Commands, Scene->DirectionalLight.ShadowTransforms, m4, Scene->NumOpaqueInstances,
                                                        BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                        BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
                 for (u32 InstanceId = 0; InstanceId < Scene->NumOpaqueInstances; ++InstanceId)
@@ -544,7 +521,7 @@ DEMO_MAIN_LOOP(MainLoop)
 
         // NOTE: Push Scene Globals
         {
-            scene_globals* Data = VkTransferPushWriteStruct(&RenderState->TransferManager, Scene->SceneBuffer, scene_globals,
+            scene_globals* Data = VkCommandsPushWriteStruct(Commands, Scene->SceneBuffer, scene_globals,
                                                             BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                             BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             *Data = {};
@@ -558,19 +535,19 @@ DEMO_MAIN_LOOP(MainLoop)
         {
             grass* Grass = &DemoState->TiledDeferredState.Grass;
 
-            grass_uniforms_gpu* Uniforms = VkTransferPushWriteStruct(&RenderState->TransferManager, Grass->UniformsGpu, grass_uniforms_gpu,
+            grass_uniforms_gpu* Uniforms = VkCommandsPushWriteStruct(Commands, Grass->UniformsGpu, grass_uniforms_gpu,
                                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                      BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             *Uniforms = Grass->UniformsCpu;
 
-            indirect_args* IndirectArgs = VkTransferPushWriteStruct(&RenderState->TransferManager, Grass->IndirectArg, indirect_args,
+            indirect_args* IndirectArgs = VkCommandsPushWriteStruct(Commands, Grass->IndirectArg, indirect_args,
                                                                     BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                     BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             *IndirectArgs = {};
             IndirectArgs->NumInstances = 1;
         }
         
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, RenderState->Commands.Buffer, &RenderState->BarrierManager);
+        VkCommandsTransferFlush(Commands, RenderState->Device);
     }
 
     // NOTE: Render Scene
@@ -580,8 +557,8 @@ DEMO_MAIN_LOOP(MainLoop)
     FullScreenPassRender(Commands, DemoState->CopyToSwapPipeline, 1, &DemoState->CopyToSwapDesc);
     RenderTargetPassEnd(Commands);
     UiStateRender(&DemoState->UiState, RenderState->Device, Commands, DemoState->SwapChainEntry.View);
-    
-    VkCheckResult(vkEndCommandBuffer(Commands.Buffer));
+
+    VkCommandsEnd(Commands, RenderState->Device);
                     
     // NOTE: Render to our window surface
     // NOTE: Tell queue where we render to surface to wait
@@ -592,10 +569,10 @@ DEMO_MAIN_LOOP(MainLoop)
     SubmitInfo.pWaitSemaphores = &RenderState->ImageAvailableSemaphore;
     SubmitInfo.pWaitDstStageMask = &WaitDstMask;
     SubmitInfo.commandBufferCount = 1;
-    SubmitInfo.pCommandBuffers = &Commands.Buffer;
+    SubmitInfo.pCommandBuffers = &Commands->Buffer;
     SubmitInfo.signalSemaphoreCount = 1;
     SubmitInfo.pSignalSemaphores = &RenderState->FinishedRenderingSemaphore;
-    VkCheckResult(vkQueueSubmit(RenderState->GraphicsQueue, 1, &SubmitInfo, Commands.Fence));
+    VkCheckResult(vkQueueSubmit(RenderState->GraphicsQueue, 1, &SubmitInfo, Commands->Fence));
     
     VkPresentInfoKHR PresentInfo = {};
     PresentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

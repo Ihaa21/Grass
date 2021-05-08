@@ -78,6 +78,9 @@ struct tiled_deferred_state
 {
     vk_linear_arena RenderTargetArena;
 
+    u32 RenderWidth;
+    u32 RenderHeight;
+    
     directional_shadow Shadow;
     grass Grass;
     

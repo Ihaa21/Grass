@@ -94,6 +94,9 @@ inline void TiledDeferredSwapChainChange(tiled_deferred_state* State, u32 Width,
 {
     b32 ReCreate = State->RenderTargetArena.Used != 0;
     VkArenaClear(&State->RenderTargetArena);
+
+    State->RenderWidth = Width;
+    State->RenderHeight = Height;
     
     // NOTE: Render Target Data
     {
@@ -134,10 +137,9 @@ inline void TiledDeferredSwapChainChange(tiled_deferred_state* State, u32 Width,
     }
     
     // NOTE: Tiled Data
+    u32 NumTilesX = CeilU32(f32(Width) / f32(TILE_SIZE_IN_PIXELS));
+    u32 NumTilesY = CeilU32(f32(Height) / f32(TILE_SIZE_IN_PIXELS));
     {
-        u32 NumTilesX = CeilU32(f32(Width) / f32(TILE_SIZE_IN_PIXELS));
-        u32 NumTilesY = CeilU32(f32(Height) / f32(TILE_SIZE_IN_PIXELS));
-
         // NOTE: Destroy old data
         if (ReCreate)
         {
@@ -173,43 +175,40 @@ inline void TiledDeferredSwapChainChange(tiled_deferred_state* State, u32 Width,
     VkDescriptorManagerFlush(RenderState->Device, &RenderState->DescriptorManager);
     
     // NOTE: Init Grid Frustums
-    vk_commands Commands = RenderState->Commands;
-    VkCommandsBegin(RenderState->Device, Commands);
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
     {
         // NOTE: Init our images
-        VkBarrierImageAdd(&RenderState->BarrierManager, VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                          VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_GENERAL,
-                          VK_IMAGE_ASPECT_COLOR_BIT, State->LightGrid_O.Image);
-        VkBarrierImageAdd(&RenderState->BarrierManager, VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                          VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_GENERAL,
-                          VK_IMAGE_ASPECT_COLOR_BIT, State->LightGrid_T.Image);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+        VkBarrierImageAdd(Commands, State->LightGrid_O.Image, VK_IMAGE_ASPECT_COLOR_BIT, 
+                          VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+        VkBarrierImageAdd(Commands, State->LightGrid_T.Image, VK_IMAGE_ASPECT_COLOR_BIT, 
+                          VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+        VkCommandsBarrierFlush(Commands);
 
         // NOTE: Update our tiled deferred globals
         {
-            tiled_deferred_globals* Data = VkTransferPushWriteStruct(&RenderState->TransferManager, State->TiledDeferredGlobals, tiled_deferred_globals,
+            tiled_deferred_globals* Data = VkCommandsPushWriteStruct(Commands, State->TiledDeferredGlobals, tiled_deferred_globals,
                                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
                                                                      BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
             *Data = {};
             Data->InverseProjection = Inverse(CameraGetP(&Scene->Camera));
             Data->ScreenSize = V2(RenderState->WindowWidth, RenderState->WindowHeight);
-            Data->GridSizeX = CeilU32(f32(RenderState->WindowWidth) / f32(TILE_SIZE_IN_PIXELS));
-            Data->GridSizeY = CeilU32(f32(RenderState->WindowHeight) / f32(TILE_SIZE_IN_PIXELS));
+            Data->GridSizeX = NumTilesX;
+            Data->GridSizeY = NumTilesY;
         }
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, RenderState->Commands.Buffer, &RenderState->BarrierManager);
+        VkCommandsTransferFlush(Commands, RenderState->Device);
 
-        vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, State->GridFrustumPipeline->Handle);
         VkDescriptorSet DescriptorSets[] =
             {
                 State->TiledDeferredDescriptor,
             };
-        vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, State->GridFrustumPipeline->Layout, 0,
-                                ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
-        u32 DispatchX = CeilU32(f32(RenderState->WindowWidth) / f32(8 * TILE_SIZE_IN_PIXELS));
-        u32 DispatchY = CeilU32(f32(RenderState->WindowHeight) / f32(8 * TILE_SIZE_IN_PIXELS));
-        vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
+        u32 DispatchX = CeilU32(f32(NumTilesX) / 8.0f);
+        u32 DispatchY = CeilU32(f32(NumTilesY) / 8.0f);
+        VkComputeDispatch(Commands, State->GridFrustumPipeline, DescriptorSets, ArrayCount(DescriptorSets), DispatchX, DispatchY, 1);
     }
-    VkCommandsSubmit(RenderState->GraphicsQueue, Commands);
+    VkCommandsSubmit(Commands, RenderState->Device, RenderState->GraphicsQueue);
 }
 
 inline void TiledDeferredCreate(renderer_create_info CreateInfo, VkDescriptorSet* OutputRtSet, tiled_deferred_state* Result)
@@ -519,7 +518,7 @@ inline void TiledDeferredAddMeshes(tiled_deferred_state* State, render_mesh* Qua
     State->QuadMesh = QuadMesh;
 }
 
-inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* State, render_scene* Scene)
+inline void TiledDeferredRender(vk_commands* Commands, tiled_deferred_state* State, render_scene* Scene)
 {
     // NOTE: Clear images
     {
@@ -532,52 +531,48 @@ inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* Stat
         Range.baseArrayLayer = 0;
         Range.layerCount = 1;
         
-        vkCmdClearColorImage(Commands.Buffer, State->LightGrid_O.Image, VK_IMAGE_LAYOUT_GENERAL, &ClearColor.color, 1, &Range);
-        vkCmdClearColorImage(Commands.Buffer, State->LightGrid_T.Image, VK_IMAGE_LAYOUT_GENERAL, &ClearColor.color, 1, &Range);
-        vkCmdFillBuffer(Commands.Buffer, State->LightIndexCounter_O, 0, sizeof(u32), 0);
-        vkCmdFillBuffer(Commands.Buffer, State->LightIndexCounter_T, 0, sizeof(u32), 0);
+        vkCmdClearColorImage(Commands->Buffer, State->LightGrid_O.Image, VK_IMAGE_LAYOUT_GENERAL, &ClearColor.color, 1, &Range);
+        vkCmdClearColorImage(Commands->Buffer, State->LightGrid_T.Image, VK_IMAGE_LAYOUT_GENERAL, &ClearColor.color, 1, &Range);
+        vkCmdFillBuffer(Commands->Buffer, State->LightIndexCounter_O, 0, sizeof(u32), 0);
+        vkCmdFillBuffer(Commands->Buffer, State->LightIndexCounter_T, 0, sizeof(u32), 0);
     }
 
     // NOTE: Gen grass
     {
         grass* Grass = &State->Grass;
-        vk_pipeline* Pipeline = Grass->GenBladesPipeline;
 
-        VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                           VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, Grass->IndirectArg);
-        //VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-        //                   VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, Grass->IndirectArg);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
-        
-        vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
+        VkBarrierBufferAdd(Commands, Grass->IndirectArg, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                           VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        //VkBarrierBufferAdd(Commands, Grass->IndirectArg, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        //                   VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        VkCommandsBarrierFlush(Commands);
+
         VkDescriptorSet DescriptorSets[] =
             {
                 Grass->Descriptor,
             };
-        vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0, ArrayCount(DescriptorSets),
-                                DescriptorSets, 0, 0);
         u32 DispatchX = CeilU32(f32(Grass->UniformsCpu.NumBladesX) / f32(8));
         u32 DispatchY = CeilU32(f32(Grass->UniformsCpu.NumBladesY) / f32(8));
-        vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
+        VkComputeDispatch(Commands, Grass->GenBladesPipeline, DescriptorSets, ArrayCount(DescriptorSets), DispatchX, DispatchY, 1);
 
-        //VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        //                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, Grass->IndirectArg);
-        VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                           VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, Grass->IndirectArg);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+        //VkBarrierBufferAdd(Commands, Grass->IndirectArg, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        //                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+        VkBarrierBufferAdd(Commands, Grass->IndirectArg, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                           VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        VkCommandsBarrierFlush(Commands);
     }
     
     // NOTE: Shadow Pass
     RenderTargetPassBegin(&State->Shadow.Target, Commands, RenderTargetRenderPass_SetViewPort | RenderTargetRenderPass_SetScissor);
     {
         vk_pipeline* Pipeline = State->Shadow.Pipeline;
-        vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
+        vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
         VkDescriptorSet DescriptorSets[] =
             {
                 State->TiledDeferredDescriptor,
                 Scene->SceneDescriptor,
             };
-        vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
+        vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
                                 ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
 
         for (u32 InstanceId = 0; InstanceId < Scene->NumOpaqueInstances; ++InstanceId)
@@ -586,9 +581,9 @@ inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* Stat
             render_mesh* CurrMesh = Scene->RenderMeshes + CurrInstance->MeshId;
             
             VkDeviceSize Offset = 0;
-            vkCmdBindVertexBuffers(Commands.Buffer, 0, 1, &CurrMesh->VertexBuffer, &Offset);
-            vkCmdBindIndexBuffer(Commands.Buffer, CurrMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(Commands.Buffer, CurrMesh->NumIndices, 1, 0, 0, InstanceId);
+            vkCmdBindVertexBuffers(Commands->Buffer, 0, 1, &CurrMesh->VertexBuffer, &Offset);
+            vkCmdBindIndexBuffer(Commands->Buffer, CurrMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(Commands->Buffer, CurrMesh->NumIndices, 1, 0, 0, InstanceId);
         }
     }
     RenderTargetPassEnd(Commands);
@@ -599,7 +594,7 @@ inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* Stat
         // NOTE: Regular entities
         {
             vk_pipeline* Pipeline = State->GBufferPipeline;
-            vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
+            vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
 
             for (u32 InstanceId = 0; InstanceId < Scene->NumOpaqueInstances; ++InstanceId)
             {
@@ -612,13 +607,13 @@ inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* Stat
                         Scene->SceneDescriptor,
                         CurrMesh->MaterialDescriptor,
                     };
-                vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
+                vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
                                         ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
             
                 VkDeviceSize Offset = 0;
-                vkCmdBindVertexBuffers(Commands.Buffer, 0, 1, &CurrMesh->VertexBuffer, &Offset);
-                vkCmdBindIndexBuffer(Commands.Buffer, CurrMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(Commands.Buffer, CurrMesh->NumIndices, 1, 0, 0, InstanceId);
+                vkCmdBindVertexBuffers(Commands->Buffer, 0, 1, &CurrMesh->VertexBuffer, &Offset);
+                vkCmdBindIndexBuffer(Commands->Buffer, CurrMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(Commands->Buffer, CurrMesh->NumIndices, 1, 0, 0, InstanceId);
             }
         }
         
@@ -627,57 +622,54 @@ inline void TiledDeferredRender(vk_commands Commands, tiled_deferred_state* Stat
             grass* Grass = &State->Grass;
             
             vk_pipeline* Pipeline = Grass->GBufferPipeline;
-            vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
+            vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
                     Grass->Descriptor,
                     State->TiledDeferredDescriptor,
                     Scene->SceneDescriptor,
                 };
-            vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
+            vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
 
-            vkCmdDrawIndirect(Commands.Buffer, Grass->IndirectArg, 0, 1, 0);
+            vkCmdDrawIndirect(Commands->Buffer, Grass->IndirectArg, 0, 1, 0);
         }
     }
     RenderTargetPassEnd(Commands);
     
     // NOTE: Light Culling Pass
     {
-        vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, State->LightCullPipeline->Handle);
         VkDescriptorSet DescriptorSets[] =
             {
                 State->TiledDeferredDescriptor,
                 Scene->SceneDescriptor,
             };
-        vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, State->LightCullPipeline->Layout, 0,
-                                ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
-        u32 DispatchX = CeilU32(f32(RenderState->WindowWidth) / f32(TILE_SIZE_IN_PIXELS));
-        u32 DispatchY = CeilU32(f32(RenderState->WindowHeight) / f32(TILE_SIZE_IN_PIXELS));
-        vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
+        u32 DispatchX = CeilU32(f32(State->RenderWidth) / f32(TILE_SIZE_IN_PIXELS));
+        u32 DispatchY = CeilU32(f32(State->RenderHeight) / f32(TILE_SIZE_IN_PIXELS));
+        VkComputeDispatch(Commands, State->LightCullPipeline, DescriptorSets, ArrayCount(DescriptorSets), DispatchX, DispatchY, 1);
     }
 
-    vkCmdPipelineBarrier(Commands.Buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+    vkCmdPipelineBarrier(Commands->Buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 0, 0);
     
     // NOTE: Lighting Pass
     RenderTargetPassBegin(&State->LightingPass, Commands, RenderTargetRenderPass_SetViewPort | RenderTargetRenderPass_SetScissor);
     {
-        vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State->LightingPipeline->Handle);
+        vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State->LightingPipeline->Handle);
         {
             VkDescriptorSet DescriptorSets[] =
                 {
                     State->TiledDeferredDescriptor,
                     Scene->SceneDescriptor,
                 };
-            vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State->LightingPipeline->Layout, 0,
+            vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State->LightingPipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
         }
 
         VkDeviceSize Offset = 0;
-        vkCmdBindVertexBuffers(Commands.Buffer, 0, 1, &State->QuadMesh->VertexBuffer, &Offset);
-        vkCmdBindIndexBuffer(Commands.Buffer, State->QuadMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(Commands.Buffer, State->QuadMesh->NumIndices, 1, 0, 0, 0);
+        vkCmdBindVertexBuffers(Commands->Buffer, 0, 1, &State->QuadMesh->VertexBuffer, &Offset);
+        vkCmdBindIndexBuffer(Commands->Buffer, State->QuadMesh->IndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(Commands->Buffer, State->QuadMesh->NumIndices, 1, 0, 0, 0);
     }
 
     RenderTargetPassEnd(Commands);
