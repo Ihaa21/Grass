@@ -46,6 +46,7 @@ inline grass GrassCreate(v2 WorldMin, v2 WorldMax, u32 NumBladesX, u32 NumBlades
         VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
         VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
         VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+        VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
             
         VkDescriptorLayoutEnd(RenderState->Device, &Builder);
     }
@@ -63,18 +64,23 @@ inline grass GrassCreate(v2 WorldMin, v2 WorldMax, u32 NumBladesX, u32 NumBlades
     Result.UniformsGpu = VkBufferCreate(RenderState->Device, &Result.Arena, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                         sizeof(grass_uniforms_gpu));
     VkDescriptorBufferWrite(&RenderState->DescriptorManager, Result.Descriptor, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, Result.UniformsGpu);
-
+    
     Result.UniformsCpu.WorldMin = WorldMin;
     Result.UniformsCpu.WorldMax = WorldMax;
     Result.UniformsCpu.NumBladesX = NumBladesX;
     Result.UniformsCpu.NumBladesY = NumBladesY;
     Result.UniformsCpu.MaterialId = 0; // TODO: Implement
     Result.UniformsCpu.MaxBladeSegments = 4;
-    Result.UniformsCpu.MaxBendAngle = 0;
-    Result.UniformsCpu.BladeHeight = 1;
-    Result.UniformsCpu.BladeHeightVariance = 0.1f;
-    Result.UniformsCpu.BladeWidth = 1;
+    Result.UniformsCpu.MaxBendAngle = 0.182f;
+    Result.UniformsCpu.BladeCurvature = 0.305f;
+    Result.UniformsCpu.BladeHeight = 1.1f;
+    Result.UniformsCpu.BladeHeightVariance = 0.43f;
+    Result.UniformsCpu.BladeWidth = 0.27f;
     Result.UniformsCpu.BladeWidthVariance = 0.1f;
+    Result.UniformsCpu.WindTimeMult = 0.008f;
+    Result.UniformsCpu.WindTexMult = 1.0f;
+    Result.UniformsCpu.WindPosMult = 1.0f;
+    Result.UniformsCpu.WindAmplitude = 0.223f;
 
     {
         VkDescriptorSetLayout Layouts[] =
@@ -85,6 +91,14 @@ inline grass GrassCreate(v2 WorldMin, v2 WorldMax, u32 NumBladesX, u32 NumBlades
         Result.GenBladesPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
                                                            "gen_grass.spv", "main", Layouts, ArrayCount(Layouts));
     }
+    
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
+    Result.WindSampler = VkSamplerCreate(RenderState->Device, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, 0.0f);
+    Result.WindNoiseTexture = TextureLoad("WindPerlinNoise.png", VK_FORMAT_R8G8B8A8_UNORM, 1, { 4, false, false });
+    VkDescriptorImageWrite(&RenderState->DescriptorManager, Result.Descriptor, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           Result.WindNoiseTexture.View, Result.WindSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkCommandsSubmit(Commands, RenderState->Device, RenderState->GraphicsQueue);
 
     return Result;
 }

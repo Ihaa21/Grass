@@ -39,6 +39,12 @@ struct grass_uniforms_gpu
     f32 BladeHeightVariance;
     f32 BladeWidth;
     f32 BladeWidthVariance;
+
+    f32 WindTimeMult;
+    f32 WindTexMult;
+    f32 WindPosMult;
+    f32 WindAmplitude;
+    f32 CurrTime;
 };
 
 struct grass_draw_triangle_gpu
@@ -66,6 +72,8 @@ struct grass
     
     grass_uniforms_gpu UniformsCpu;
     VkBuffer UniformsGpu;
+    VkSampler WindSampler;
+    vk_image WindNoiseTexture;
 
     VkDescriptorSetLayout DescLayout;
     VkDescriptorSet Descriptor;

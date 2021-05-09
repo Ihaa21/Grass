@@ -283,7 +283,7 @@ float DirLightOcclusionGet(vec3 SurfaceNormal, vec3 LightDir, vec3 LightPos)
     float Bias = clamp(0.005 * tan(acos(clamp(dot(SurfaceNormal, LightDir), 0, 1))), 0, 0.005);
     float Depth = texture(DirectionalShadow, Uv).x;
     
-    return step(LightPos.z - Bias, Depth);
+    return step(Depth, LightPos.z + Bias);
 }
 
 layout(location = 0) out vec4 OutColor;
@@ -333,7 +333,7 @@ void main()
     
     // NOTE: Calculate lighting for directional lights
     {
-        float Occlusion = DirLightOcclusionGet(SurfaceNormal, DirectionalLight.Dir, (DirectionalLight.VPTransform * vec4(SurfacePos, 1)).xyz);
+        float Occlusion = 1.0f; //DirLightOcclusionGet(SurfaceNormal, DirectionalLight.Dir, (DirectionalLight.VPTransform * vec4(SurfacePos, 1)).xyz);
         Color += Occlusion*BlinnPhongLighting(View, SurfaceColor, SurfaceNormal, Entry.SpecularPower, DirectionalLight.Dir,
                                               DirectionalLight.Color);
         Color += DirectionalLight.AmbientLight * SurfaceColor;

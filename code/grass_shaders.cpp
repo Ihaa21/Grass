@@ -7,8 +7,9 @@
 
 struct draw_triangle
 {
-    vec3 Vertices[3]; // NOTE: WS Position
+    vec4 Vertices[3]; // NOTE: WS Position + Height
     vec3 Normal;
+    uint Pad;
 };
 
 struct indirect_args
@@ -45,7 +46,17 @@ layout(set = 0, binding = 2) uniform gen_input_buffer
     float BladeHeightVariance;
     float BladeWidth;
     float BladeWidthVariance;
+
+    // NOTE: Wind Params
+    float WindTimeMult;
+    float WindTexMult;
+    float WindPosMult;
+    float WindAmplitude;
+    float CurrTime;
+    
 } GrassInputs;
+
+layout(set = 0, binding = 3) uniform sampler2D WindNoiseTexture;
 
 GBUFFER_DESCRIPTOR_LAYOUT(1)
 SCENE_DESCRIPTOR_LAYOUT(2)
@@ -106,14 +117,15 @@ vec2 GetBladeDimensions(vec3 PositionWs)
     return Result;
 }
 
-vec3 SetupBladePoint(vec3 BladeCenterWs, vec2 Dimensions, mat3 TBN, vec2 Uv)
+vec4 SetupBladePoint(vec3 BladeCenterWs, vec2 Dimensions, mat3 TBN, vec2 Uv)
 {
-    vec3 Result;
+    vec4 Result;
 
     // TODO: We can probably integrate dimensions into the mat
     vec3 OffsetTs = vec3((Uv.x - 0.5) * Dimensions.x, 0, Uv.y * Dimensions.y);
+    Result.w = OffsetTs.z / Dimensions.y;
     vec3 OffsetWs = TBN * OffsetTs;
-    Result = BladeCenterWs + OffsetWs;
+    Result.xyz = BladeCenterWs + OffsetWs;
 
     return Result;
 }
@@ -131,6 +143,7 @@ void main()
     vec2 BladeCenter2D = gl_GlobalInvocationID.xy / vec2(GrassInputs.NumBlades);
     BladeCenter2D = mix(GrassInputs.WorldMin, GrassInputs.WorldMax, BladeCenter2D);
     vec3 BladeCenter = vec3(BladeCenter2D.x, -2.0f, BladeCenter2D.y); // TODO: Hacky
+    vec3 BladeNormal = vec3(0, 1, 0); // TODO: Give the height maps value here
 
     vec2 Dimensions;
     mat3 BaseTransform;
@@ -150,9 +163,20 @@ void main()
 
     uint NumBladeSegments = min(MAX_BLADE_SEGMENTS, max(1, GrassInputs.MaxBladeSegments));
 
-    vec3 Vertices[MAX_BLADE_POINTS];
+    vec4 Vertices[MAX_BLADE_POINTS];
     float MaxBend = RandomFloat(BladeCenter, 3) * Pi32 * 0.5f * GrassInputs.MaxBendAngle;
 
+    vec3 WindAxis;
+    {
+        vec2 WindUv = BladeCenter2D * GrassInputs.WindPosMult + vec2(GrassInputs.CurrTime * GrassInputs.WindTimeMult);
+        WindUv = WindUv * GrassInputs.WindTexMult;
+
+        vec2 WindNoise = 2.0f * texture(WindNoiseTexture, WindUv).xy - vec2(1.0f);
+        // NOTE: We want to the wind to blow perpendicular to the normal of the grass root
+        // NOTE: Wind Axis is not normalized and encodes strength in it too from the noise texture
+        WindAxis = cross(BladeNormal, vec3(WindNoise.x, WindNoise.y, 0));
+    }
+    
     // NOTE: Generate blade segments
     for (int i = 0; i < NumBladeSegments; ++i)
     {
@@ -160,7 +184,8 @@ void main()
         float u = 0.5 - (1 - v) * 0.5;
 
         mat3 BendMatrix = AngleAxis3x3(MaxBend * pow(v, GrassInputs.BladeCurvature), vec3(1, 0, 0));
-        mat3 Transform = BaseTransform * BendMatrix;
+        mat3 WindMatrix = AngleAxis3x3(GrassInputs.WindAmplitude * v, WindAxis);
+        mat3 Transform = WindMatrix * BaseTransform * BendMatrix;
         
         Vertices[i*2 + 0] = SetupBladePoint(BladeCenter, Dimensions, Transform, vec2(u, v));
         Vertices[i*2 + 1] = SetupBladePoint(BladeCenter, Dimensions, Transform, vec2(1 - u, v));
@@ -169,7 +194,8 @@ void main()
     // NOTE: Generate blade tip
     {
         mat3 BendMatrix = AngleAxis3x3(MaxBend * pow(1, GrassInputs.BladeCurvature), vec3(1, 0, 0));
-        mat3 Transform = BaseTransform * BendMatrix;
+        mat3 WindMatrix = AngleAxis3x3(GrassInputs.WindAmplitude, WindAxis);
+        mat3 Transform = WindMatrix * BaseTransform * BendMatrix;
         Vertices[NumBladeSegments * 2] = SetupBladePoint(BladeCenter, Dimensions, Transform, vec2(0.5, 1));
     }
 
@@ -184,7 +210,7 @@ void main()
         Triangle.Vertices[0] = Vertices[i+0];
         Triangle.Vertices[1] = Vertices[i+1];
         Triangle.Vertices[2] = Vertices[i+2];
-        Triangle.Normal = cross(Triangle.Vertices[0], Triangle.Vertices[2]);
+        Triangle.Normal = BladeNormal;
         GrassTriangles[StartTriangleId + i] = Triangle;
     }
 }
@@ -200,18 +226,20 @@ void main()
 layout(location = 0) out vec3 OutViewPos;
 layout(location = 1) out vec3 OutViewNormal;
 layout(location = 2) out flat uint OutMaterialId;
+layout(location = 3) out float OutHeight;
 
 void main()
 {
     draw_triangle GrassTriangle = GrassTriangles[gl_VertexIndex / 3];
-    vec3 Vertex = GrassTriangle.Vertices[gl_VertexIndex % 3];
+    vec4 Vertex = GrassTriangle.Vertices[gl_VertexIndex % 3];
     
-    gl_Position = SceneBuffer.VPTransform * vec4(Vertex, 1);
-    OutViewPos = (SceneBuffer.VTransform * vec4(Vertex, 1)).xyz;
-    OutViewNormal = (SceneBuffer.VTransform * vec4(GrassTriangle.Normal, 0)).xyz;
+    gl_Position = SceneBuffer.VPTransform * vec4(Vertex.xyz, 1);
+    OutViewPos = (SceneBuffer.VTransform * vec4(Vertex.xyz, 1)).xyz;
+    OutViewNormal = normalize((SceneBuffer.VTransform * vec4(GrassTriangle.Normal, 0)).xyz);
     OutMaterialId = GrassInputs.MaterialId;
     // TODO: NASTY HACK
     OutMaterialId = 0xFFFFFFFF - 1;
+    OutHeight = Vertex.w;
 }
 
 #endif
@@ -221,6 +249,7 @@ void main()
 layout(location = 0) in vec3 InViewPos;
 layout(location = 1) in vec3 InViewNormal;
 layout(location = 2) in flat uint InMaterialId;
+layout(location = 3) in float InHeight;
 
 layout(location = 0) out vec4 OutViewPos;
 layout(location = 1) out vec4 OutViewNormal;
@@ -230,7 +259,7 @@ void main()
 {
     OutViewPos = vec4(InViewPos, 0);
     OutViewNormal = vec4(normalize(InViewNormal), 0);
-    OutMaterial.rgb = vec3(0, 1, 0);
+    OutMaterial.rgb = vec3(0, InHeight, 0);
     OutMaterial.w = uintBitsToFloat(InMaterialId);
 }
 

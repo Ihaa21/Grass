@@ -151,7 +151,7 @@ DEMO_INIT(Init)
     {
         render_scene* Scene = &DemoState->Scene;
 
-        Scene->Camera = CameraFpsCreate(V3(0, 0, -5), V3(0, 0, 1), true, 1.0f, 0.005f);
+        Scene->Camera = CameraFpsCreate(V3(0, 0, -5), V3(0, 0, 1), true, 1.0f, 0.05f);
         CameraSetPersp(&Scene->Camera, f32(RenderState->WindowWidth / RenderState->WindowHeight), 90.0f, 0.01f, 1000.0f);
 
         Scene->SceneBuffer = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
@@ -420,8 +420,40 @@ DEMO_MAIN_LOOP(MainLoop)
         {
             UiPanelText(&Panel, "Blade Height Variance:");
             UiPanelNextRowIndent(&Panel);
-            UiPanelHorizontalSlider(&Panel, 0, 4, &Uniforms->BladeHeightVariance);
+            UiPanelHorizontalSlider(&Panel, 0, 1, &Uniforms->BladeHeightVariance);
             UiPanelNumberBox(&Panel, 0, 1, &Uniforms->BladeHeightVariance);
+            UiPanelNextRow(&Panel);
+        }
+
+        {
+            UiPanelText(&Panel, "Wind Time Mult:");
+            UiPanelNextRowIndent(&Panel);
+            UiPanelHorizontalSlider(&Panel, 0, 4, &Uniforms->WindTimeMult);
+            UiPanelNumberBox(&Panel, 0, 4, &Uniforms->WindTimeMult);
+            UiPanelNextRow(&Panel);
+        }
+
+        {
+            UiPanelText(&Panel, "Wind Tex Mult:");
+            UiPanelNextRowIndent(&Panel);
+            UiPanelHorizontalSlider(&Panel, 0, 4, &Uniforms->WindTexMult);
+            UiPanelNumberBox(&Panel, 0, 4, &Uniforms->WindTexMult);
+            UiPanelNextRow(&Panel);
+        }
+
+        {
+            UiPanelText(&Panel, "Wind Pos Mult:");
+            UiPanelNextRowIndent(&Panel);
+            UiPanelHorizontalSlider(&Panel, 0, 4, &Uniforms->WindPosMult);
+            UiPanelNumberBox(&Panel, 0, 4, &Uniforms->WindPosMult);
+            UiPanelNextRow(&Panel);
+        }
+
+        {
+            UiPanelText(&Panel, "Wind Amplitude:");
+            UiPanelNextRowIndent(&Panel);
+            UiPanelHorizontalSlider(&Panel, 0, 4, &Uniforms->WindAmplitude);
+            UiPanelNumberBox(&Panel, 0, 4, &Uniforms->WindAmplitude);
             UiPanelNextRow(&Panel);
         }
 
@@ -444,7 +476,8 @@ DEMO_MAIN_LOOP(MainLoop)
         // NOTE: Populate scene
         //
         {
-            v3 LightDir = Normalize(V3(0.4f, -1.0f, 0.0f));
+            //v3 LightDir = Normalize(V3(0.4f, -1.0f, 0.0f));
+            v3 LightDir = Normalize(V3(1.0f, 0.0f, 0.0f));
             
             SceneDirectionalLightSet(Scene, LightDir, V3(1.0f, 1.0f, 1.0f), V3(0.4),
                                      V3(-50.0f, -10.0f, -50.0f), V3(50.0f, 10.0f, 50.0f));
@@ -538,6 +571,7 @@ DEMO_MAIN_LOOP(MainLoop)
             grass_uniforms_gpu* Uniforms = VkCommandsPushWriteStruct(Commands, Grass->UniformsGpu, grass_uniforms_gpu,
                                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                                      BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+            Grass->UniformsCpu.CurrTime += FrameTime;
             *Uniforms = Grass->UniformsCpu;
 
             indirect_args* IndirectArgs = VkCommandsPushWriteStruct(Commands, Grass->IndirectArg, indirect_args,
